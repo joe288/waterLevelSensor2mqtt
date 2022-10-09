@@ -179,7 +179,7 @@ void loop() {
   // Query the modbus device
   if (millis() - lastModbus >= UPDATE_MODBUS * mS_TO_S_FACTOR) {
     lastModbus = millis();
-    float hight = sensorInterface.readLevel();
+    double hight = sensorInterface.readLevel();
     String unit = sensorInterface.getLevelUnit();
 
     double meter = 0;
@@ -195,7 +195,7 @@ void loop() {
     // Serial.println(meter);
     char topic[80];
     char value[300];
-    sprintf(value, "{\"value\": %f, \"unit\": %s, \"level\": %d, \"liter\": %d\"}", hight, unit, level, liter);
+    sprintf(value, "{\"value\": %.2f, \"unit\":\" %s\", \"level\": %d, \"liter\": %d}", hight, unit, level, liter);
     sprintf(topic, "%s/%s", topicRoot, "waterLevel");
     mqtt.publish(topic, value);
   }

@@ -25,7 +25,7 @@ class QDY30AIF {
     uint16_t getDecimalPlaces(); 
     struct measureData
     {
-      float value;
+      double value;
       String unit;
     };
     struct measureData waterLevel;
@@ -42,7 +42,7 @@ class QDY30AIF {
     uint16_t readRegister(uint16_t reg);
     uint8_t ReadInputRegisters(char* json);
     String sendModbusError(uint8_t result);
-    float readLevel();
+    double readLevel();
     String getLevelUnit();
 
     // Error codes

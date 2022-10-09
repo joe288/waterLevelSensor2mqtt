@@ -83,7 +83,7 @@ uint16_t QDY30AIF::getDecimalPlaces(void){
   return readRegister(3);
 }
 
-float QDY30AIF::readLevel(void){
+double QDY30AIF::readLevel(void){
   uint16_t data = readRegister(4);
   switch (modbusdata.decimalPlaces)
   {
