@@ -4,8 +4,8 @@
 #include "Arduino.h"
 
 #define lyingCylinder //defines the shape of the tank
-#define L  2.3        // lenth of the tank
-#define r  0.75       // radius of the tank
+#define L  2.64        // lenth of the tank
+#define r  0.6945       // radius of the tank
 
 class calcValue {
   private:
