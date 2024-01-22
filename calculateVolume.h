@@ -14,7 +14,7 @@ class calcValue {
     uint8_t level     = 0;    //in %
     uint16_t liter    = 0;
 
-    double lyingCyl(double height);
+    double lyingCyl(double height,double max =0);
 
   public:
     calcValue();
