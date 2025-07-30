@@ -15,14 +15,23 @@
 #include <PubSubClient.h>         // MQTT support
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
-#include <esp_task_wdt.h>
+#include <esp_task_wdt.h>         // Task-Watchdog
 #include "settings.h"
 #include "QDY30AInterface.h"
 #include "calculateVolume.h"
 
+#define FIXEDIP
+
+// Watchdog-Timeout in Sekunden
+#define WDT_TIMEOUT_S 15
+
+int wifiRetries = 0;
+const int MAX_RETRIES = 10;
+bool apStarted = false;
+
 char newclientid[80];
-char buildversion[12]="v1.0.0";
-unsigned long lastModbus , lastStatus, lastWifiCheck, lastTick, uptime;
+char buildversion[12] = "v1.0.1";
+unsigned long lastModbus, lastStatus, lastWifiCheck, lastTick, uptime;
 
 WiFiClient espClient;
 PubSubClient mqtt(mqtt_server, 1883, 0, espClient);
@@ -32,21 +41,21 @@ calcValue calculateVolume;
 
 // MQTT reconnect logic
 void reconnect() {
-  //String mytopic;
-  // Loop until we're reconnected
   while (!mqtt.connected()) {
+    // Watchdog füttern in langer Retry-Schleife
+    esp_task_wdt_reset();
+
     Serial.print("Attempting MQTT connection...");
-    byte mac[6];                     // the MAC address of your Wifi shield
+    byte mac[6];
     WiFi.macAddress(mac);
     sprintf(newclientid, "%s-%02x%02x%02x", clientID, mac[2], mac[1], mac[0]);
     Serial.print(F("Client ID: "));
     Serial.println(newclientid);
-    // Attempt to connect
+
     char topic[80];
     sprintf(topic, "%s/%s", topicRoot, "connection");
-    if (mqtt.connect(newclientid, mqtt_user, mqtt_password, topic, 1, true, "offline")) { //last will
+    if (mqtt.connect(newclientid, mqtt_user, mqtt_password, topic, 1, true, "offline")) {
       Serial.println(F("connected"));
-      // ... and resubscribe
       mqtt.publish(topic, "online", true);
       sprintf(topic, "%s/write/#", topicRoot);
       mqtt.subscribe(topic);
@@ -54,7 +63,6 @@ void reconnect() {
       Serial.print(F("failed, rc="));
       Serial.print(mqtt.state());
       Serial.println(F(" try again in 5 seconds"));
-      // Wait 5 seconds before retrying
       delay(5000);
     }
   }
@@ -63,30 +71,38 @@ void reconnect() {
 void setup() {
   Serial.begin(SERIAL_RATE);
   Serial.println(F("\nwaterLevelSensor to MQTT Gateway"));
-  
+
+  // ─── WATCHDOG INIT ─────────────────────────────────────────
+  // init Watchdog mit Panic nach Timeout, Task NULL = current task (loop)
+  esp_task_wdt_init(WDT_TIMEOUT_S, true);
+  esp_task_wdt_add(NULL);
+  // ───────────────────────────────────────────────────────────
+
   // Init outputs, RS485 in receive mode
   pinMode(STATUS_LED, OUTPUT);
 
   // Connect to Wifi
   Serial.print(F("Connecting to Wifi"));
   WiFi.mode(WIFI_STA);
-  lastWifiCheck=0;
+
+  lastWifiCheck = 0;
 
 #ifdef FIXEDIP
-  // Configures static IP address
   if (!WiFi.config(local_IP, gateway, subnet, primaryDNS, secondaryDNS)) {
     Serial.println("STA Failed to configure");
   }
 #endif
 
   WiFi.begin(ssid, password);
+  unsigned long wifiStart = millis();
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
+    esp_task_wdt_reset();   // Watchdog füttern
     Serial.print(F("."));
     lastWifiCheck++;
-    if (lastWifiCheck > 180) {
-      // reboot the ESP if cannot connect to wifi
-      ESP.restart();
+    if (millis() - wifiStart > 18000) {
+      //ESP.restart();
+      break;
     }
   }
   lastWifiCheck = 0;
@@ -100,63 +116,62 @@ void setup() {
   // Set up the Modbus line
   sensorInterface.initSensor();
   Serial.println("Modbus connection is set up");
-  
+
   // Set up the MQTT server connection
-  if (mqtt_server != "") {
+  if ((mqtt_server != "") and (WiFi.status() == WL_CONNECTED)) {
+    Serial.println("MQTT setup");
     mqtt.setServer(mqtt_server, 1883);
     mqtt.setBufferSize(1024);
     mqtt.setCallback(callback);
   }
 
   // Hostname defaults to esp32-[ChipID]
-  byte mac[6];                     // the MAC address of your Wifi shield
+  byte mac[6];
   WiFi.macAddress(mac);
   char value[80];
   sprintf(value, "%s-%02x%02x%02x", clientID, mac[2], mac[1], mac[0]);
+  
   ArduinoOTA.setHostname(value);
 
-  // No authentication by default
-  // ArduinoOTA.setPassword((const char *)"123");
-
   ArduinoOTA.onStart([]() {
- //   os_timer_disarm(&myTimer);
-    Serial.println("Start");
+    Serial.println("Start OTA");
   });
   ArduinoOTA.onEnd([]() {
-    Serial.println("\nEnd");
-   // os_timer_arm(&myTimer, 1000, true);
+    Serial.println("\nEnd OTA");
   });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
     Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+    esp_task_wdt_reset();
   });
   ArduinoOTA.onError([](ota_error_t error) {
     Serial.printf("Error[%u]: ", error);
-    if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-    else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+    if (error == OTA_AUTH_ERROR)    Serial.println("Auth Failed");
+    else if (error == OTA_BEGIN_ERROR)   Serial.println("Begin Failed");
     else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
     else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-    else if (error == OTA_END_ERROR) Serial.println("End Failed");
+    else if (error == OTA_END_ERROR)     Serial.println("End Failed");
   });
   ArduinoOTA.begin();
+  Serial.println("end Setup");
 }
 
 void callback(char* topic, byte* payload, unsigned int length) {
-  // Convert the incoming byte array to a string
-
-  int i = 0;
-  for (i = 0; i < length; i++) {        // each char to upper
+  for (unsigned int i = 0; i < length; i++) {
     payload[i] = toupper(payload[i]);
   }
-  payload[length] = '\0';               // Null terminator used to terminate the char array
+  payload[length] = '\0';
   String message = (char*)payload;
-
-  char expectedTopic[40];
+  // Dein Callback-Code hier…
 }
 
 void loop() {
+  // ─── WDT RESET ──────────────────────────────────────────────
+  esp_task_wdt_reset();
+  // ───────────────────────────────────────────────────────────
+
   ArduinoOTA.handle();
-  // Handle MQTT connection/reconnection
-  if (mqtt_server != "") {
+
+  if ((mqtt_server != "") and (WiFi.status() == WL_CONNECTED)) {
     if (!mqtt.connected()) {
       reconnect();
     }
@@ -164,10 +179,20 @@ void loop() {
   }
 
   if (millis() - lastWifiCheck >= WIFICHECK) {
-    // reconnect to the wifi network if connection is lost
-    if (WiFi.status() != WL_CONNECTED) {
+    if (WiFi.status() != WL_CONNECTED && !apStarted) {
       Serial.println("Reconnecting to wifi...");
       WiFi.reconnect();
+      wifiRetries++;
+      if (wifiRetries >= MAX_RETRIES) {
+        Serial.println("Maximale Versuche erreicht. Starte Access Point...");
+        WiFi.mode(WIFI_AP);
+        WiFi.softAP("ESP32_Fallback","12345678");
+        Serial.print("AP aktiv! IP-Adresse: ");
+        Serial.println(WiFi.softAPIP());
+        apStarted = true;
+      }
+    } else if (WiFi.status() == WL_CONNECTED) {
+      wifiRetries = 0;
     }
     lastWifiCheck = millis();
   }
@@ -181,34 +206,32 @@ void loop() {
     lastModbus = millis();
     double hight = sensorInterface.readLevel();
     String unit = sensorInterface.getLevelUnit();
-
-    double meter = 0;
-    if (unit == "cm"){
-      meter = hight /100;
-    }
+    double meter = (unit == "cm") ? (hight / 100) : hight;
     calculateVolume.processValue(meter);
     uint8_t level = calculateVolume.getLevel();
     uint16_t liter = calculateVolume.getLiter();
 
-    // Serial.print(hight);
-    // Serial.println(unit);
-    // Serial.println(meter);
-    char topic[80];
-    char value[300];
-    sprintf(value, "{\"value\": %.2f, \"unit\":\" %s\", \"level\": %d, \"liter\": %d}", hight, unit, level, liter);
+    char topic[80], value[300];
+    sprintf(value, "{\"value\": %.2f, \"unit\":\"%s\", \"level\": %d, \"liter\": %d}",
+            hight, unit.c_str(), level, liter);
     sprintf(topic, "%s/%s", topicRoot, "waterLevel");
     mqtt.publish(topic, value);
   }
+
   if (millis() - lastStatus >= UPDATE_STATUS * mS_TO_S_FACTOR) {
     lastStatus = millis();
-    // Send MQTT update
     if (mqtt_server != "") {
-      char topic[80];
-      char value[300];
-      sprintf(value, "{\"rssi\": %d, \"uptime\": %d, \"ssid\": \"%s\", \"ip\": \"%d.%d.%d.%d\", \"clientid\":\"%s\", \"version\":\"%s\"}", WiFi.RSSI(), uptime, WiFi.SSID().c_str(), WiFi.localIP()[0], WiFi.localIP()[1], WiFi.localIP()[2], WiFi.localIP()[3], newclientid, buildversion);
+      char topic[80], value[300];
+      sprintf(value,
+              "{\"rssi\": %d, \"uptime\": %d, \"ssid\": \"%s\", \"ip\": \"%d.%d.%d.%d\", \"clientid\":\"%s\", \"version\":\"%s\"}",
+              WiFi.RSSI(), uptime, WiFi.SSID().c_str(),
+              WiFi.localIP()[0], WiFi.localIP()[1],
+              WiFi.localIP()[2], WiFi.localIP()[3],
+              newclientid, buildversion);
       sprintf(topic, "%s/%s", topicRoot, "status");
       mqtt.publish(topic, value);
       Serial.println(F("MQTT status sent"));
     }
   }
 }
+
