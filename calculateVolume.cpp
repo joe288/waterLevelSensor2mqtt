@@ -33,8 +33,16 @@ void calcValue::processValue(double height){
     #ifdef lyingCylinder
       volume = lyingCyl(height,maxVolume);
     #endif
-    level = (volume / maxVolume)*100;
-    liter = volume *1000;
+    
+    if (maxVolume > 0)
+      level = static_cast<uint8_t>((volume / maxVolume) * 100);
+     else 
+      level = 0;
+    
+    if (volume * 1000 <= std::numeric_limits<uint16_t>::max()) 
+      liter = static_cast<uint16_t>(volume * 1000);
+    else 
+      liter = std::numeric_limits<uint16_t>::max();
 }
 
 uint8_t calcValue::getLevel(){

@@ -26,6 +26,7 @@
 #define WDT_TIMEOUT_S 15
 
 int wifiRetries = 0;
+int mqttRetries = 0;
 const int MAX_RETRIES = 10;
 bool apStarted = false;
 
@@ -38,6 +39,9 @@ PubSubClient mqtt(mqtt_server, 1883, 0, espClient);
 
 QDY30AIF sensorInterface(MAX485_RE_NEG, MAX485_DE, MAX485_RX, MAX485_TX);
 calcValue calculateVolume;
+
+unsigned long previousMillis = 0;
+long LEDinterval = 500; 
 
 // MQTT reconnect logic
 void reconnect() {
@@ -60,6 +64,11 @@ void reconnect() {
       sprintf(topic, "%s/write/#", topicRoot);
       mqtt.subscribe(topic);
     } else {
+      if (mqttRetries >= MAX_RETRIES) {
+        Serial.println("Maximale Versuche erreicht MQTT. Neustart");
+        ESP.restart();
+      }
+      mqttRetries ++;
       Serial.print(F("failed, rc="));
       Serial.print(mqtt.state());
       Serial.println(F(" try again in 5 seconds"));
@@ -168,10 +177,21 @@ void loop() {
   // ─── WDT RESET ──────────────────────────────────────────────
   esp_task_wdt_reset();
   // ───────────────────────────────────────────────────────────
+  unsigned long currentMillis = millis();
+
+  if (WiFi.status() != WL_CONNECTED)
+    LEDinterval = 200;
+  else
+    LEDinterval = 600;
+
+  if (currentMillis - previousMillis >= LEDinterval) {
+    previousMillis = currentMillis;
+    digitalWrite(STATUS_LED, !digitalRead(STATUS_LED));
+  }
 
   ArduinoOTA.handle();
 
-  if ((mqtt_server != "") and (WiFi.status() == WL_CONNECTED)) {
+  if ((mqtt_server != "")){//and (WiFi.status() == WL_CONNECTED)) {
     if (!mqtt.connected()) {
       reconnect();
     }
